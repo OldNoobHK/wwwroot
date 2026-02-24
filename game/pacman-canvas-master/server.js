@@ -8,7 +8,7 @@ var myLogger = function (req, res, next) {
 }
 
 app.use(myLogger);
-app.use(express.static('.'))
+app.use(express.static(__dirname));
 
 // viewed at http://localhost:8080
 app.get('/', function (req, res, next) {
