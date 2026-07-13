@@ -7,7 +7,7 @@ class JM extends ComicSource {
     // unique id of the source
     key = "jm"
 
-    version = "1.3.4"
+    version = "1.4.0"
 
     minAppVersion = "1.5.0"
 
@@ -17,6 +17,8 @@ class JM extends ComicSource {
 
     // update url
     url = "https://cdn.jsdelivr.net/gh/venera-app/venera-configs@main/jm.js"
+
+    dailyCheckInInProgress = false
 
     static fallbackServers = [
         "www.cdntwice.org",
@@ -70,6 +72,9 @@ class JM extends ComicSource {
     }
 
     getApiHeaders(time) {
+        if (this.loadSetting("dailyCheckInTask")) {
+            this.dailyCheckIn(true)
+        }
         const jmAuthKey = "18comicAPPContent"
         let token = Convert.md5(Convert.encodeUtf8(`${time}${jmAuthKey}`))
 
@@ -296,6 +301,46 @@ class JM extends ComicSource {
         return this.convertData(data, `${time}${kJmSecret}`)
     }
 
+    async dailyCheckIn(isTask = false) {
+        if (this.dailyCheckInInProgress) return
+        this.dailyCheckInInProgress = true
+        const throwError = (msg) => {
+            UI.showMessage(msg)
+            throw msg
+        }
+        try {
+            const lastCheckInDate = this.loadData("lastCheckInDate")
+            const today = new Date().toLocaleDateString('zh-CN')
+            if (lastCheckInDate && lastCheckInDate === today) {
+                if (isTask) return
+                throwError("Already checked in today")
+            }
+            if (!this.isLogged) {
+                if (isTask) return
+                throwError("Please login to check-in")
+            }
+            const uid = this.loadData("uid")
+            if (!uid) {
+                throwError("Invalid uid, please login again")
+            }
+            const checkRecordRes = await this.get(`${this.baseUrl}/daily?user_id=${uid}`)
+            const checkRecord = JSON.parse(checkRecordRes)
+            if (!('daily_id' in checkRecord)) {
+                throwError("Invalid daily_id, check-in failed")
+            }
+            const daily_id = checkRecord.daily_id
+            const checkResultRes = await this.post(`${this.baseUrl}/daily_chk`, `user_id=${uid}&daily_id=${daily_id}`)
+            const checkResult = JSON.parse(checkResultRes)
+            if (!checkResult.msg) {
+                throwError("Invalid check-in result, check-in failed")
+            }
+            UI.showMessage(checkResult.msg)
+            this.saveData("lastCheckInDate", today)
+        } finally {
+            this.dailyCheckInInProgress = false
+        }
+    }
+
     // [Optional] account related
     account = {
         /**
@@ -306,10 +351,14 @@ class JM extends ComicSource {
          */
         login: async (account, pwd) => {
             let time = Math.floor(Date.now() / 1000)
-            await this.post(
+            let res = await this.post(
                 `${this.baseUrl}/login`,
                 `username=${encodeURIComponent(account)}&password=${encodeURIComponent(pwd)}`
             )
+            let json = JSON.parse(res)
+            if (json.uid) {
+                this.saveData("uid", json.uid)
+            }
             return "ok"
         },
 
@@ -721,6 +770,8 @@ class JM extends ComicSource {
             let res = await this.get(`${this.baseUrl}/album?id=${id}`);
             let data = JSON.parse(res)
             let author = data.author ?? []
+            let works = data.works ?? []
+            let actors = data.actors ?? []
             let chapters = new Map()
             let series = (data.series ?? []).sort((a, b) => a.sort - b.sort)
             for(let e of series) {
@@ -754,11 +805,15 @@ class JM extends ComicSource {
                 likesCount: Number(data.likes),
                 chapters: chapters,
                 tags: {
-                    "作者": author,
-                    "標籤": tags,
+                    "Author": author,
+                    "Tag": tags,
+                    "Work": works,
+                    "Actor": actors,
+                    "View": data.total_views ? [data.total_views] : [],
                 },
-                related: related,
+                recommend: related,
                 isFavorite: data.is_favorite ?? false,
+                isLiked: data.liked ?? false,
                 updateTime: updateDate,
             })
         },
@@ -857,6 +912,20 @@ class JM extends ComicSource {
             return {
                 headers: this.getImgHeaders()
             }
+        },
+        /**
+         * [Optional] like or unlike a comic
+         * @param id {string}
+         * @param isLike {boolean} - true for like, false for unlike
+         * @returns {Promise<void>}
+         */
+        likeComic: async (id, isLike) => {
+            let res = await this.post(`${this.baseUrl}/like`, `id=${id}`)
+            let json = JSON.parse(res)
+            if (json.code !== 200 || json.status === 'error') {
+                throw json.msg ?? 'Failed to like/unlike comic'
+            }
+            return "ok"
         },
         /**
          * [Optional] load comments
@@ -985,7 +1054,18 @@ class JM extends ComicSource {
                 }
             ],
             default: 'mr'
-        }
+        },
+        dailyCheckInTask: {
+            title: "Daily Check-in Task",
+            type: "switch",
+            default: false
+        },
+        dailyCheckIn: {
+            title: "Manual Check-In",
+            type: "callback",
+            buttonText: "Check-In",
+            callback: () => this.dailyCheckIn()
+        },
     }
 
     // [Optional] translations for the strings in this config
@@ -997,9 +1077,17 @@ class JM extends ComicSource {
             'Api Domain': 'Api域名',
             'Image Stream': '图片分流',
             'Favorite Order': '收藏夹排序',
+            'Daily Check-in Task': '每日自动签到',
+            'Manual Check-In': '手动签到',
+            'Check-In': '签到',
             'Add Time': '添加时间',
             'Update Time': '更新时间',
             'All': '全部',
+            'Author': '作者',
+            'Tag': '标签',
+            'Work': '作品',
+            'Actor': '角色',
+            'View': '浏览量',
         },
         'zh_TW': {
             'Refresh Domain List': '刷新域名列表',
@@ -1008,9 +1096,17 @@ class JM extends ComicSource {
             'Api Domain': 'Api域名',
             'Image Stream': '圖片分流',
             'Favorite Order': '收藏夾排序',
+            'Daily Check-in Task': '每日自動簽到',
+            'Manual Check-In': '手動簽到',
+            'Check-In': '簽到',
             'Add Time': '添加時間',
             'Update Time': '更新時間',
             'All': '全部',
+            'Author': '作者',
+            'Tag': '標籤',
+            'Work': '作品',
+            'Actor': '角色',
+            'View': '瀏覽量',
         },
     }
 }
